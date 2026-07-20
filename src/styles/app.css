@@ -1,0 +1,404 @@
+@import "tailwindcss";
+
+@theme {
+  --color-juice-900: #0a0a0a;
+  --color-juice-800: #111111;
+  --color-juice-750: #161616;
+  --color-juice-700: #1a1a1a;
+  --color-juice-600: #222222;
+  --color-juice-500: #2a2a2a;
+  --color-juice-400: #3a3a3a;
+  --color-juice-300: #555555;
+  --color-juice-200: #888888;
+  --color-juice-100: #aaaaaa;
+  --color-accent: #7c3aed;
+  --color-accent-light: #8b5cf6;
+  --color-accent-dark: #6d28d9;
+  --color-accent-glow: rgba(124, 58, 237, 0.25);
+  --color-glass-border: rgba(255, 255, 255, 0.06);
+  --color-glass-border-hover: rgba(255, 255, 255, 0.10);
+  --color-glass-bg: rgba(255, 255, 255, 0.03);
+  --color-glass-bg-hover: rgba(255, 255, 255, 0.05);
+  --color-glass-bg-active: rgba(124, 58, 237, 0.10);
+}
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: var(--color-juice-900);
+    color: white;
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    letter-spacing: -0.01em;
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background: var(--color-accent-glow);
+    color: white;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-juice-400);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-juice-300);
+  }
+}
+
+@layer components {
+  .glass-panel {
+    background: var(--color-glass-bg);
+    border: 1px solid var(--color-glass-border);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-radius: 14px;
+  }
+
+  .glass-panel-hover {
+    transition: all 0.2s ease-out;
+  }
+  .glass-panel-hover:hover {
+    background: var(--color-glass-bg-hover);
+    border-color: var(--color-glass-border-hover);
+  }
+
+  .glass-sidebar {
+    background: rgba(10, 10, 10, 0.85);
+    border-right: 1px solid var(--color-glass-border);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+  }
+
+  .card {
+    background: var(--color-glass-bg);
+    border: 1px solid var(--color-glass-border);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-radius: 14px;
+    padding: 1.25rem;
+  }
+
+  .card-hover {
+    background: var(--color-glass-bg);
+    border: 1px solid var(--color-glass-border);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-radius: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease-out;
+  }
+  .card-hover:hover {
+    background: var(--color-glass-bg-hover);
+    border-color: var(--color-glass-border-hover);
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1.25rem;
+    border-radius: 0.75rem;
+    font-weight: 500;
+    font-size: 0.875rem;
+    transition: all 0.2s ease-out;
+    cursor: pointer;
+    background: linear-gradient(135deg, var(--color-accent), var(--color-accent-dark));
+    color: white;
+    border: none;
+  }
+  .btn-primary:hover {
+    background: linear-gradient(135deg, var(--color-accent-light), var(--color-accent));
+    box-shadow: 0 4px 20px var(--color-accent-glow);
+    transform: translateY(-1px);
+  }
+
+  .btn-glass {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1.25rem;
+    border-radius: 0.75rem;
+    font-weight: 500;
+    font-size: 0.875rem;
+    transition: all 0.2s ease-out;
+    cursor: pointer;
+    background: var(--color-glass-bg);
+    border: 1px solid var(--color-glass-border);
+    color: var(--color-juice-100);
+  }
+  .btn-glass:hover {
+    background: var(--color-glass-bg-hover);
+    border-color: var(--color-glass-border-hover);
+    color: white;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.625rem 0.75rem;
+    border-radius: 0.75rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: all 0.2s ease-out;
+    cursor: pointer;
+    color: var(--color-juice-200);
+  }
+  .nav-item:hover {
+    background: var(--color-glass-bg-hover);
+    color: white;
+  }
+  .nav-item.active {
+    background: var(--color-glass-bg-active);
+    color: var(--color-accent-light);
+  }
+
+  .page-transition {
+    animation: fadeSlideIn 0.25s ease-out;
+  }
+
+  @keyframes fadeSlideIn {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* ─── Professional Keyframe Animations ──────────────── */
+
+  @keyframes skeletonShimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+
+  @keyframes scaleIn {
+    0% {
+      opacity: 0;
+      transform: scale(0.92);
+    }
+    60% {
+      transform: scale(1.03);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes glowPulse {
+    0%, 100% {
+      box-shadow: 0 0 4px var(--color-accent-glow), 0 0 8px var(--color-accent-glow);
+    }
+    50% {
+      box-shadow: 0 0 10px rgba(124, 58, 237, 0.5), 0 0 20px rgba(124, 58, 237, 0.3);
+    }
+  }
+
+  @keyframes shakeX {
+    0%, 100% { transform: translateX(0); }
+    10%, 50%, 90% { transform: translateX(-4px); }
+    30%, 70% { transform: translateX(4px); }
+  }
+
+  @keyframes shimmerProgress {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+
+  @keyframes bgGlowPulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+  }
+
+  @keyframes strokeDraw {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* ─── Animation Utility Classes ─────────────────────── */
+
+  .animate-scaleIn {
+    animation: scaleIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .animate-slideUp {
+    animation: slideUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .animate-fadeIn {
+    animation: fadeIn 0.35s ease-out both;
+  }
+
+  .animate-glowPulse {
+    animation: glowPulse 2s ease-in-out infinite;
+  }
+
+  .animate-shakeX {
+    animation: shakeX 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  }
+
+  /* ─── Skeleton Loading ──────────────────────────────── */
+
+  .skeleton {
+    border-radius: 8px;
+    background: linear-gradient(
+      90deg,
+      var(--color-juice-600) 0%,
+      var(--color-juice-500) 40%,
+      var(--color-juice-600) 70%
+    );
+    background-size: 200% 100%;
+    animation: skeletonShimmer 1.8s ease-in-out infinite;
+  }
+
+  .skeleton-bar {
+    height: 4px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      90deg,
+      var(--color-juice-600) 0%,
+      var(--color-accent) 40%,
+      var(--color-juice-600) 70%
+    );
+    background-size: 200% 100%;
+    animation: shimmerProgress 2s ease-in-out infinite;
+  }
+
+  /* ─── Reduced Motion ────────────────────────────────── */
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* ─── Sidebar Tooltip ───────────────────────────────── */
+
+  .sidebar-tooltip {
+    position: absolute;
+    left: calc(100% + 10px);
+    top: 50%;
+    transform: translateY(-50%) scale(0.9);
+    opacity: 0;
+    pointer-events: none;
+    white-space: nowrap;
+    padding: 0.375rem 0.75rem;
+    border-radius: 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: white;
+    background: rgba(30, 30, 30, 0.95);
+    border: 1px solid var(--color-glass-border);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: all 0.15s ease-out;
+    z-index: 60;
+  }
+
+  .nav-item-wrapper:hover .sidebar-tooltip,
+  .nav-item-wrapper:focus-within .sidebar-tooltip {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+
+  .progress-bar {
+    height: 0.375rem;
+    border-radius: 9999px;
+    overflow: hidden;
+    background: var(--color-juice-500);
+  }
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 9999px;
+    transition: width 0.5s ease-out;
+    background: linear-gradient(90deg, var(--color-accent), var(--color-accent-light));
+  }
+
+  .progress-bar-gradient {
+    height: 0.25rem;
+    border-radius: 9999px;
+    overflow: hidden;
+    background: var(--color-juice-500);
+  }
+  .progress-bar-gradient-fill {
+    height: 100%;
+    border-radius: 9999px;
+    transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    background: linear-gradient(90deg, var(--color-accent), var(--color-accent-light), #c084fc);
+  }
+
+  .scroller {
+    display: flex;
+    gap: 1rem;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+  .scroller > * {
+    scroll-snap-align: start;
+    flex-shrink: 0;
+  }
+
+  /* ─── Phase Fade Transition ─────────────────────────── */
+
+  .phase-fade {
+    animation: fadeIn 0.3s ease-out both;
+  }
+}

@@ -7,11 +7,8 @@ import {
   masteringPresets,
   generateMixHistory,
   generateMasterHistory,
-  generateSpectrumData,
-  generateStereoData,
   generateWaveformData,
   generateMasteredWaveform,
-  getMockLufsReadings,
   type StemChannel,
   type MasteringChainSettings,
   type MasteringPreset,
@@ -20,14 +17,16 @@ import {
 } from "../data/mock";
 import {
   getContext,
-  getAnalyser,
-  getFrequencyData,
-  getWaveformData,
-  getRMSLevel,
-  getApproximateLUFS,
-  startMetronome,
-  stopMetronome,
 } from "../audio/engine";
+import {
+  createMasteringEngine,
+  getMasteringEngine,
+  disposeMasteringEngine,
+  type MasteringEngine,
+} from "../audio/mastering";
+import {
+  getSession,
+} from "../audio/session";
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -289,7 +288,6 @@ function reducer(state: State, action: Action): State {
         ...state,
         chain: { ...action.preset.chain },
         activeMasteringPreset: action.preset.id,
-        lufsReadings: getMockLufsReadings(action.preset),
       };
 
     case "SET_LUFS":
@@ -445,10 +443,9 @@ function Knob({
   );
 }
 
-function Vectorscope({ isPlaying, processed }: { isPlaying: boolean; processed: boolean }) {
+function Vectorscope({ isPlaying, processed, engineRef }: { isPlaying: boolean; processed: boolean; engineRef: React.RefObject<MasteringEngine | null> }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef(0);
-  const isBrowser = typeof window !== "undefined";
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -503,20 +500,25 @@ function Vectorscope({ isPlaying, processed }: { isPlaying: boolean; processed: 
         return;
       }
 
-      // Get real L/R waveform data from analyser
+      // Get real L/R waveform data from mastering engine analyser
       let data: { x: number; y: number }[] = [];
-      try {
-        const wfData = getWaveformData("mixing-master");
-        const halfLen = Math.floor(wfData.length / 2);
-        for (let i = 0; i < Math.min(halfLen, 100); i++) {
-          // Map byte data (0-255) to -1..1
-          const x = (wfData[i * 2] - 128) / 128;
-          const y = (wfData[i * 2 + 1] - 128) / 128;
-          data.push({ x, y });
+      const engine = engineRef.current;
+      if (engine) {
+        try {
+          const wfData = engine.getWaveformData();
+          const halfLen = Math.floor(wfData.length / 2);
+          for (let i = 0; i < Math.min(halfLen, 100); i++) {
+            // Map byte data (0-255) to -1..1
+            const x = (wfData[i * 2] - 128) / 128;
+            const y = (wfData[i * 2 + 1] - 128) / 128;
+            data.push({ x, y });
+          }
+        } catch {
+          data = [{ x: 0, y: 0 }];
         }
-      } catch {
-        // Fallback to procedural
-        data = generateStereoData(200);
+      }
+      if (data.length === 0) {
+        data = [{ x: 0, y: 0 }];
       }
 
       // Add new point
@@ -551,7 +553,7 @@ function Vectorscope({ isPlaying, processed }: { isPlaying: boolean; processed: 
       animating = false;
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
     };
-  }, [isPlaying, processed]);
+  }, [isPlaying, processed, engineRef]);
 
   return (
     <canvas
@@ -562,7 +564,7 @@ function Vectorscope({ isPlaying, processed }: { isPlaying: boolean; processed: 
   );
 }
 
-function SpectrumAnalyzer({ isPlaying, processed }: { isPlaying: boolean; processed: boolean }) {
+function SpectrumAnalyzer({ isPlaying, processed, engineRef }: { isPlaying: boolean; processed: boolean; engineRef: React.RefObject<MasteringEngine | null> }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef(0);
 
@@ -587,15 +589,40 @@ function SpectrumAnalyzer({ isPlaying, processed }: { isPlaying: boolean; proces
 
       ctx.clearRect(0, 0, w, h);
 
-      const mode = processed ? "processed" : "dry";
-      const data = isPlaying ? generateSpectrumData(mode as "dry" | "processed") : generateSpectrumData("processed").map(() => 0.05);
-      const barWidth = w / data.length;
+      // Get real frequency data from the mastering engine
+      let freqData: Uint8Array;
+      const engine = engineRef.current;
+      if (engine && isPlaying) {
+        try {
+          freqData = engine.getFrequencyData();
+        } catch {
+          freqData = new Uint8Array(64).fill(5);
+        }
+      } else {
+        freqData = new Uint8Array(64).fill(5);
+      }
+
+      // Downsample to ~64 bars for display
+      const bars = 64;
+      const step = Math.max(1, Math.floor(freqData.length / bars));
+      const displayData: number[] = [];
+      for (let i = 0; i < bars; i++) {
+        let sum = 0;
+        let count = 0;
+        for (let j = 0; j < step && (i * step + j) < freqData.length; j++) {
+          sum += freqData[i * step + j];
+          count++;
+        }
+        displayData.push((sum / count) / 255); // normalize to 0-1
+      }
+
+      const barWidth = w / displayData.length;
       const alpha = isPlaying ? 1 : 0.3;
 
-      for (let i = 0; i < data.length; i++) {
-        const barH = data[i] * h * 0.9;
+      for (let i = 0; i < displayData.length; i++) {
+        const barH = Math.max(0.02, displayData[i]) * h * 0.9;
         const x = i * barWidth;
-        const t = i / data.length;
+        const t = i / displayData.length;
 
         // Gradient: red (lows) -> yellow (mids) -> purple (highs)
         let r: number, g: number, b: number;
@@ -632,7 +659,7 @@ function SpectrumAnalyzer({ isPlaying, processed }: { isPlaying: boolean; proces
       animating = false;
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
     };
-  }, [isPlaying, processed]);
+  }, [isPlaying, processed, engineRef]);
 
   return (
     <canvas
@@ -778,17 +805,49 @@ function MixingMastering() {
   const [state, dispatch] = useReducer(reducer, null, buildInitialState);
   const [toastVisible, setToastVisible] = useState(false);
   const toastTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const engineRef = useRef<MasteringEngine | null>(null);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [sessionName, setSessionName] = useState<string | null>(null);
 
   const isBrowser = typeof window !== "undefined";
 
-  // Initialize audio context and analyser for vectorscope
+  // Initialize mastering engine on mount
   useEffect(() => {
     if (!isBrowser) return;
     try {
+      // Ensure AudioContext is created
       getContext();
-      // Create analyser for mixing-master visuals
-      getAnalyser("mixing-master");
-    } catch {}
+      // Create the mastering engine (handles session bridging + test tone fallback)
+      const engine = createMasteringEngine();
+      engineRef.current = engine;
+      setSessionActive(engine.isSessionActive);
+      setSessionName(engine.sourceLabel);
+
+      // Apply default chain settings
+      engine.setEQ(
+        defaultMasteringChain.eq.lowGain,
+        defaultMasteringChain.eq.midGain,
+        defaultMasteringChain.eq.highGain
+      );
+      engine.setCompressor(
+        defaultMasteringChain.compressor.threshold,
+        defaultMasteringChain.compressor.ratio,
+        defaultMasteringChain.compressor.attack,
+        defaultMasteringChain.compressor.release
+      );
+      engine.setLimiter(
+        defaultMasteringChain.limiter.ceiling,
+        defaultMasteringChain.limiter.threshold,
+        defaultMasteringChain.limiter.release
+      );
+    } catch {
+      // Audio not available
+    }
+
+    return () => {
+      disposeMasteringEngine();
+      engineRef.current = null;
+    };
   }, [isBrowser]);
 
   const showToast = useCallback(
@@ -828,9 +887,56 @@ function MixingMastering() {
     return () => cancelAnimationFrame(raf);
   }, [state.isPlaying]);
 
+  // Poll real LUFS/RMS readings from the mastering engine when in master mode
+  useEffect(() => {
+    if (state.mode !== "master") return;
+    let animating = true;
+    const poll = () => {
+      if (!animating) return;
+      const engine = engineRef.current;
+      if (engine) {
+        const rms = engine.getRMSLevel();
+        const lufs = engine.getApproximateLUFS();
+        const truePeak = Math.min(0, rms + 3); // rough true peak estimate
+        const dynamicRange = Math.max(2, 14 - (Math.abs(rms) / 4));
+        dispatch({
+          type: "SET_LUFS",
+          readings: {
+            integrated: lufs,
+            shortTerm: lufs + (Math.random() - 0.5) * 1,
+            momentary: lufs + (Math.random() - 0.5) * 2,
+            truePeak,
+            dynamicRange,
+          },
+        });
+      }
+      setTimeout(poll, 500);
+    };
+    poll();
+    return () => { animating = false; };
+  }, [state.mode]);
+
   // Generate waveform data (memoized)
   const originalWaveform = useRef(generateWaveformData(durationSec));
   const masteredWaveform = useRef(generateMasteredWaveform(originalWaveform.current));
+
+  // Sync mastering chain state changes to the audio engine
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || state.mode !== "master") return;
+    engine.setEQ(state.chain.eq.lowGain, state.chain.eq.midGain, state.chain.eq.highGain);
+    engine.setCompressor(
+      state.chain.compressor.threshold,
+      state.chain.compressor.ratio,
+      state.chain.compressor.attack,
+      state.chain.compressor.release
+    );
+    engine.setLimiter(
+      state.chain.limiter.ceiling,
+      state.chain.limiter.threshold,
+      state.chain.limiter.release
+    );
+  }, [state.chain, state.mode]);
 
   // Handle AI Auto-Mix
   const handleAutoMix = useCallback(async () => {
@@ -864,6 +970,13 @@ function MixingMastering() {
     await new Promise((r) => setTimeout(r, 3500));
     const preset = masteringPresets[Math.floor(Math.random() * masteringPresets.length)];
     dispatch({ type: "APPLY_MASTERING_PRESET", preset });
+    // Update engine
+    const engine = engineRef.current;
+    if (engine) {
+      engine.setEQ(preset.chain.eq.lowGain, preset.chain.eq.midGain, preset.chain.eq.highGain);
+      engine.setCompressor(preset.chain.compressor.threshold, preset.chain.compressor.ratio, preset.chain.compressor.attack, preset.chain.compressor.release);
+      engine.setLimiter(preset.chain.limiter.ceiling, preset.chain.limiter.threshold, preset.chain.limiter.release);
+    }
     dispatch({ type: "AI_COMPLETE" });
     dispatch({ type: "SET_BEFORE_AFTER", value: "after" });
     showToast(`AI Master applied — ${preset.name} ✓`);
@@ -875,6 +988,13 @@ function MixingMastering() {
       dispatch({ type: "AI_START", label: `Loading ${preset.name} preset...` });
       await new Promise((r) => setTimeout(r, 800));
       dispatch({ type: "APPLY_MASTERING_PRESET", preset });
+      // Update engine
+      const engine = engineRef.current;
+      if (engine) {
+        engine.setEQ(preset.chain.eq.lowGain, preset.chain.eq.midGain, preset.chain.eq.highGain);
+        engine.setCompressor(preset.chain.compressor.threshold, preset.chain.compressor.ratio, preset.chain.compressor.attack, preset.chain.compressor.release);
+        engine.setLimiter(preset.chain.limiter.ceiling, preset.chain.limiter.threshold, preset.chain.limiter.release);
+      }
       dispatch({ type: "AI_COMPLETE" });
       dispatch({ type: "SET_BEFORE_AFTER", value: "after" });
       showToast(`${preset.name} preset applied ✓`);
@@ -1148,7 +1268,7 @@ function MixingMastering() {
         <div className="card p-4">
           <h4 className="text-xs font-semibold text-white mb-2 uppercase tracking-wider">Stereo Field</h4>
           <div className="aspect-square rounded-lg overflow-hidden">
-            <Vectorscope isPlaying={state.isPlaying} processed={true} />
+            <Vectorscope isPlaying={state.isPlaying} processed={true} engineRef={engineRef} />
           </div>
         </div>
 
@@ -1156,7 +1276,7 @@ function MixingMastering() {
         <div className="card p-4">
           <h4 className="text-xs font-semibold text-white mb-2 uppercase tracking-wider">Frequency Spectrum</h4>
           <div className="h-24 rounded-lg overflow-hidden">
-            <SpectrumAnalyzer isPlaying={state.isPlaying} processed={true} />
+            <SpectrumAnalyzer isPlaying={state.isPlaying} processed={true} engineRef={engineRef} />
           </div>
         </div>
       </div>
@@ -1173,6 +1293,44 @@ function MixingMastering() {
 
     return (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Session status banner */}
+        <div className="lg:col-span-12">
+          {!sessionActive ? (
+            <div className="card p-5 text-center border border-[var(--color-glass-border)]">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-[var(--color-juice-700)] flex items-center justify-center">
+                  <svg className="w-6 h-6 text-[var(--color-juice-300)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-white font-semibold text-sm">No Mix Loaded</h3>
+                  <p className="text-[var(--color-juice-300)] text-xs mt-1 max-w-md">
+                    Start a session in the <strong>Recording Studio</strong> to process your mix through the mastering chain. A test tone is playing so you can preview EQ, compression, and limiter changes.
+                  </p>
+                </div>
+                <div className="flex gap-2 mt-1">
+                  <span className="text-[10px] bg-[var(--color-juice-700)] text-[var(--color-juice-200)] px-2 py-1 rounded-full">
+                    Source: Test Tone (440 Hz)
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="card p-3 flex items-center gap-3 border border-green-500/20 bg-green-500/5">
+              <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center flex-shrink-0">
+                <svg className="w-4 h-4 text-green-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div>
+                <span className="text-green-400 text-xs font-semibold">Session Active</span>
+                <span className="text-[var(--color-juice-200)] text-xs ml-2">Processing: <strong>{sessionName}</strong></span>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Mastering Chain — Left */}
         <div className="lg:col-span-5 space-y-3">
           <h3 className="text-sm font-semibold text-white flex items-center gap-2">

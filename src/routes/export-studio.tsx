@@ -199,7 +199,8 @@ function ExportStudio() {
 
     try {
       // 1. Ensure a session exists. If the user hasn't built anything yet,
-      //    create a demo beat session so the export is real and audible.
+      //    create a short demo beat session so the export is real and audible
+      //    without a long first render.
       let session = getSession();
       if (!session) {
         const ctx = getContext();
@@ -209,7 +210,7 @@ function ExportStudio() {
           genre: "Trap",
           bpm: 140,
           energy: 7,
-          structure: ["Intro", "Verse", "Hook", "Verse", "Hook", "Bridge", "Hook", "Outro"],
+          structure: ["Intro", "Hook", "Outro"],
         });
         engine.setArrangement(arrangement);
         session = startSession(project.name, { bpm: 140, key: "Dm", genre: "Trap" });

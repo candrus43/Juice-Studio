@@ -10,6 +10,22 @@ import {
 } from "../data/mock";
 import { SocialPublishCard } from "../components/SocialPublish";
 import { getPublishHistory, type PublishRecord } from "../persistence";
+import { getSession, exportMix, startSession, loadBeat } from "../audio/session";
+import { createRoutedDrumKit } from "../audio/synth";
+import { createBeatEngine, buildArrangement } from "../audio/arranger";
+import { getContext } from "../audio/engine";
+import {
+  audioBufferToWav,
+  bufferToMediaRecorderBlob,
+  resampleBuffer,
+  normalizePeaks,
+  triggerDownload,
+  formatBytes,
+  sanitizeFileName,
+  pickRecorderMime,
+} from "../audio/export";
+
+const isBrowser = typeof window !== "undefined";
 
 export const Route = createFileRoute("/export-studio")({
   component: ExportStudio,
@@ -129,6 +145,9 @@ function ExportStudio() {
   const [settings, setSettings] = useState<ExportSettings>(defaultSettings);
   const [exportState, setExportState] = useState<"idle" | "exporting" | "complete">("idle");
   const [exportProgress, setExportProgress] = useState(0);
+  const [exportStageLabel, setExportStageLabel] = useState("Ready");
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportNote, setExportNote] = useState<string | null>(null);
   const [downloadState, setDownloadState] = useState<Record<string, "idle" | "downloading" | "done">>({});
   const [showToast, setShowToast] = useState(false);
   const [lastExport, setLastExport] = useState<ExportItem | null>(null);
@@ -138,6 +157,8 @@ function ExportStudio() {
   const [publishToast, setPublishToast] = useState<{ message: string; type: "success" | "info" | "error" } | null>(null);
   const audioTimer = useRef<ReturnType<typeof setInterval>>();
   const toastTimer = useRef<ReturnType<typeof setTimeout>>();
+  // Real encoded files produced this session, keyed by export id — enables real re-downloads.
+  const downloadBlobs = useRef<Map<string, { blob: Blob; fileName: string }>>(new Map());
 
   // Load publish history
   useEffect(() => {
@@ -166,63 +187,181 @@ function ExportStudio() {
     }));
   }, []);
 
-  // Handle export
+  // Handle export — renders the real session mix via exportMix(), encodes it,
+  // and triggers an actual file download.
   const handleExport = useCallback(async () => {
+    if (!isBrowser) return;
     setExportState("exporting");
     setExportProgress(0);
+    setExportError(null);
+    setExportNote(null);
+    setExportStageLabel("Preparing session...");
 
-    // Simulate progress
-    const duration = 4000;
-    const interval = 50;
-    const steps = duration / interval;
-    let step = 0;
-
-    const timer = setInterval(() => {
-      step++;
-      const progress = Math.min(100, (step / steps) * 100);
-      // Make it feel more realistic with slight easing
-      const eased = progress < 50
-        ? progress * 1.5
-        : 50 + (progress - 50) * 0.5;
-      setExportProgress(Math.round(Math.min(100, eased)));
-
-      if (step >= steps) {
-        clearInterval(timer);
-        setExportState("complete");
-        setExportProgress(100);
-
-        const ext = settings.format === "mp3" ? "mp3" : settings.format === "flac" ? "flac" : settings.format === "aiff" ? "aiff" : "wav";
-        const typeLabel = settings.exportType === "instrumental" ? "Instrumental" : settings.exportType === "stems" ? "Stems" : settings.exportType === "lyrics" ? "Lyrics" : settings.exportType === "backup" ? "Backup" : "Master";
-        const newExport: ExportItem = {
-          id: `ex-${Date.now()}`,
-          projectName: project.name,
-          fileName: `${project.name.replace(/\s+/g, "_")}_${typeLabel}.${ext}`,
-          format: settings.format.toUpperCase(),
-          quality: `${settings.quality} / ${(settings.sampleRate / 1000).toFixed(1)}kHz`,
-          sampleRate: settings.sampleRate,
-          size: fileSizeEstimate,
-          exportedAt: new Date().toISOString(),
-          status: "completed",
-          type: settings.exportType,
-        };
-        setLastExport(newExport);
-
-        // Show toast
-        setShowToast(true);
-        if (toastTimer.current) clearTimeout(toastTimer.current);
-        toastTimer.current = setTimeout(() => setShowToast(false), 4000);
+    try {
+      // 1. Ensure a session exists. If the user hasn't built anything yet,
+      //    create a demo beat session so the export is real and audible.
+      let session = getSession();
+      if (!session) {
+        const ctx = getContext();
+        const kit = createRoutedDrumKit(ctx);
+        const engine = createBeatEngine(ctx, kit);
+        const arrangement = buildArrangement(kit, {
+          genre: "Trap",
+          bpm: 140,
+          energy: 7,
+          structure: ["Intro", "Verse", "Hook", "Verse", "Hook", "Bridge", "Hook", "Outro"],
+        });
+        engine.setArrangement(arrangement);
+        session = startSession(project.name, { bpm: 140, key: "Dm", genre: "Trap" });
+        loadBeat(kit, engine, arrangement);
       }
-    }, interval);
-  }, [settings, fileSizeEstimate, project.name]);
+      const projectName = session.projectName || project.name;
+
+      // 2. "Instrumental" export = temporarily mute vocals, then restore.
+      const mutes: { track: typeof session.vocalTracks[number]; muted: boolean }[] = [];
+      if (settings.exportType === "instrumental") {
+        for (const track of session.vocalTracks) {
+          mutes.push({ track, muted: track.muted });
+          track.muted = true;
+        }
+      }
+
+      // 3. Real offline render (OfflineAudioContext startRendering).
+      setExportStageLabel("Rendering mix...");
+      setExportProgress(15);
+      const rendered = await exportMix();
+
+      for (const { track, muted } of mutes) track.muted = muted;
+      setExportProgress(55);
+
+      // 4. Honor the selected sample rate (exportMix renders at 44.1kHz).
+      let buffer = rendered;
+      if (settings.sampleRate !== rendered.sampleRate) {
+        setExportStageLabel("Resampling to " + settings.sampleRate / 1000 + " kHz...");
+        buffer = resampleBuffer(rendered, settings.sampleRate);
+      }
+
+      // 5. Optional peak normalization before encoding (target in dBFS).
+      if (settings.normalize) {
+        normalizePeaks(buffer, Math.pow(10, settings.targetLUFS / 20));
+      }
+
+      // 6. Encode.
+      const metadata = settings.includeMetadata
+        ? {
+            title: settings.metadata.title,
+            artist: settings.metadata.artist,
+            album: settings.metadata.album,
+            year: settings.metadata.year,
+            genre: settings.metadata.genre,
+          }
+        : undefined;
+
+      let blob: Blob;
+      let ext: string;
+      let formatLabel: string;
+      let note: string | null = null;
+
+      if (settings.format === "wav") {
+        setExportStageLabel("Encoding WAV...");
+        setExportProgress(65);
+        const bitDepth = settings.quality === "24-bit" ? 24 : settings.quality === "32-bit float" ? 32 : 16;
+        blob = audioBufferToWav(buffer, { bitDepth, metadata });
+        ext = "wav";
+        formatLabel = `WAV · ${bitDepth}-bit`;
+      } else if (settings.format === "mp3") {
+        // Browsers have no MP3 encoder — capture the real playback as WebM/Opus.
+        const mime = pickRecorderMime();
+        if (!mime) {
+          setExportStageLabel("Encoding WAV...");
+          setExportProgress(65);
+          blob = audioBufferToWav(buffer, { bitDepth: 16, metadata });
+          ext = "wav";
+          formatLabel = "WAV · 16-bit";
+          note = "MP3 requires a codec this browser doesn't provide — exported WAV instead.";
+        } else {
+          setExportStageLabel("Encoding MP3 (WebM/Opus)...");
+          setExportProgress(65);
+          blob = await bufferToMediaRecorderBlob(buffer, mime);
+          ext = "webm";
+          formatLabel = "WebM (Opus)";
+          note = "Browsers have no MP3 encoder — exported as WebM (Opus). Use WAV for distribution/mastering.";
+        }
+      } else {
+        // FLAC / AIFF need native encoders; export lossless PCM WAV instead and say so.
+        setExportStageLabel("Encoding WAV...");
+        setExportProgress(65);
+        blob = audioBufferToWav(buffer, { bitDepth: 24, metadata });
+        ext = "wav";
+        formatLabel = "WAV · 24-bit";
+        note = `${settings.format.toUpperCase()} encoding requires a native codec — exported as WAV (lossless PCM).`;
+      }
+
+      setExportProgress(90);
+
+      // 7. Filename from metadata (title/artist/album).
+      const typeLabel =
+        settings.exportType === "instrumental" ? "Instrumental"
+        : settings.exportType === "stems" ? "Stems"
+        : settings.exportType === "lyrics" ? "Lyrics"
+        : settings.exportType === "backup" ? "Backup"
+        : "Master";
+      const fileName = `${sanitizeFileName(settings.metadata.title || projectName)}_${sanitizeFileName(
+        settings.metadata.artist || "King_Juice"
+      )}_${sanitizeFileName(settings.metadata.album || projectName)}_${typeLabel}.${ext}`;
+
+      const id = `ex-${Date.now()}`;
+      const newExport: ExportItem = {
+        id,
+        projectName,
+        fileName,
+        format: formatLabel,
+        quality: `${settings.quality} / ${(buffer.sampleRate / 1000).toFixed(1)} kHz`,
+        sampleRate: buffer.sampleRate,
+        size: formatBytes(blob.size),
+        exportedAt: new Date().toISOString(),
+        status: "completed",
+        type: settings.exportType,
+      };
+      downloadBlobs.current.set(id, { blob, fileName });
+      setLastExport(newExport);
+      setExportNote(note);
+
+      // 8. Auto-download the real file.
+      setExportStageLabel("Download ready");
+      setExportProgress(100);
+      setExportState("complete");
+      triggerDownload(blob, fileName);
+
+      // Toast
+      setShowToast(true);
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setShowToast(false), 4000);
+    } catch (err) {
+      setExportState("idle");
+      setExportProgress(0);
+      setExportStageLabel("Export failed");
+      setExportError(err instanceof Error ? err.message : "Export failed — please try again.");
+    }
+  }, [settings, project.name]);
 
   const handleDownload = useCallback((exportId: string) => {
-    setDownloadState((s) => ({ ...s, [exportId]: "downloading" }));
-    setTimeout(() => {
+    const entry = downloadBlobs.current.get(exportId);
+    if (entry) {
+      // Real file — actually download it.
+      triggerDownload(entry.blob, entry.fileName);
       setDownloadState((s) => ({ ...s, [exportId]: "done" }));
       setTimeout(() => {
         setDownloadState((s) => ({ ...s, [exportId]: "idle" }));
       }, 3000);
-    }, 1500);
+    } else {
+      // Historical (pre-session) entries have no stored file.
+      setPublishToast({
+        message: "No file stored for this historical export — run Export Now to create a real file.",
+        type: "info",
+      });
+      setTimeout(() => setPublishToast(null), 4000);
+    }
   }, []);
 
   const handlePublished = useCallback((record: { platform: string; url?: string }) => {
@@ -329,7 +468,7 @@ function ExportStudio() {
         </div>
       </div>
 
-      {/* Export progress bar */}
+      {/* Export progress bar — reflects real render/encode stages, not a timer */}
       {exportState === "exporting" && (
         <div className="card p-4">
           <div className="flex items-center justify-between mb-2">
@@ -339,18 +478,33 @@ function ExportStudio() {
           <div className="progress-bar h-2">
             <div
               className="progress-bar-fill h-2"
-              style={{ width: `${exportProgress}%`, transition: "width 0.1s linear" }}
+              style={{ width: `${exportProgress}%`, transition: "width 0.2s ease-out" }}
             />
           </div>
-          <p className="text-xs text-[var(--color-juice-300)] mt-2">
-            {exportProgress < 30
-              ? "Rendering audio..."
-              : exportProgress < 60
-                ? "Applying mastering chain..."
-                : exportProgress < 90
-                  ? "Encoding file..."
-                  : "Finalizing..."}
-          </p>
+          <p className="text-xs text-[var(--color-juice-300)] mt-2">{exportStageLabel}</p>
+        </div>
+      )}
+
+      {/* Export error banner */}
+      {exportState === "idle" && exportError && (
+        <div className="card p-4" style={{ borderColor: "rgba(239,68,68,0.35)" }}>
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-red-500/20">
+              <svg className="w-4 h-4 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white">Export failed</p>
+              <p className="text-xs text-[var(--color-juice-200)] mt-0.5">{exportError}</p>
+            </div>
+            <button
+              onClick={() => setExportError(null)}
+              className="text-[var(--color-juice-400)] hover:text-white flex-shrink-0"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
         </div>
       )}
 
@@ -368,6 +522,9 @@ function ExportStudio() {
               <p className="text-xs text-[var(--color-juice-200)] truncate">
                 {lastExport.fileName} · {lastExport.size}
               </p>
+              {exportNote && (
+                <p className="text-[10px] text-amber-400 mt-0.5">{exportNote}</p>
+              )}
             </div>
             <button
               onClick={() => {
@@ -580,7 +737,7 @@ function ExportStudio() {
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="text-sm font-medium text-white">Normalize</h3>
-                <p className="text-[10px] text-[var(--color-juice-400)]">Adjust loudness to target level</p>
+                <p className="text-[10px] text-[var(--color-juice-400)]">Scale peaks to the target level before encoding</p>
               </div>
               <button
                 onClick={() => setSettings((s) => ({ ...s, normalize: !s.normalize }))}
@@ -597,7 +754,7 @@ function ExportStudio() {
             </div>
             {settings.normalize && (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-[var(--color-juice-300)]">Target LUFS:</span>
+                <span className="text-xs text-[var(--color-juice-300)]">Target level:</span>
                 <input
                   type="number"
                   value={settings.targetLUFS}
@@ -607,7 +764,7 @@ function ExportStudio() {
                   max={-8}
                   className="w-16 bg-[var(--color-juice-700)] border border-[var(--color-glass-border)] rounded-lg px-2 py-1 text-xs text-white text-center outline-none focus:border-[var(--color-accent)]"
                 />
-                <span className="text-[10px] text-[var(--color-juice-400)]">(Streaming: -14, Club: -9)</span>
+                <span className="text-[10px] text-[var(--color-juice-400)]">dBFS peak (Streaming: -14, Club: -9)</span>
               </div>
             )}
           </div>

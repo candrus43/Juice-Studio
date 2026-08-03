@@ -79,7 +79,8 @@ export function audioBufferToWav(
 
   const listPayload = listInfoPayloadSize(opts.metadata);
   const riffSize = 4 + (8 + 16) + (listPayload ? 8 + listPayload : 0) + (8 + dataSize);
-  const totalBytes = 12 + riffSize;
+  // RIFF chunk size excludes the 8-byte RIFF header ("RIFF" + size).
+  const totalBytes = 8 + riffSize;
 
   const ab = new ArrayBuffer(totalBytes);
   const view = new DataView(ab);
@@ -206,6 +207,18 @@ export function normalizePeaks(buffer: AudioBuffer, targetPeak = 0.98): void {
 /** Encode PCM as MPEG-1 Layer III using the browser-bundled lamejs encoder. */
 export async function audioBufferToMp3(buffer: AudioBuffer, bitrate: number): Promise<Blob> {
   const lame = await import("lamejs");
+  // lamejs 1.2.1's CJS modules reference MPEGMode as a global from Lame.js.
+  // Provide the enum-shaped fallback needed by both Bun and browser bundlers.
+  const runtime = globalThis as typeof globalThis & { MPEGMode?: Record<string, object> };
+  runtime.MPEGMode ??= {
+    NOT_SET: {}, MONO: {}, JOINT_STEREO: {}, STEREO: {}, DUAL_CHANNEL: {},
+  };
+  // The package also has a legacy free-variable reference to Lame in BitStream.
+  // Expose its constructor only when that compatibility path is needed.
+  if (typeof (runtime as Record<string, unknown>).Lame === "undefined") {
+    const lameModule = await import("lamejs/src/js/Lame.js");
+    (runtime as Record<string, unknown>).Lame = lameModule.default ?? lameModule;
+  }
   const encoder = new lame.Mp3Encoder(2, buffer.sampleRate, bitrate);
   const left = buffer.getChannelData(0);
   const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;

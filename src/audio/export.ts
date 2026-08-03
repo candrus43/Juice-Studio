@@ -4,9 +4,7 @@
  *
  * - audioBufferToWav: PCM WAV encoder (16-bit int, 24-bit int, 32-bit float)
  *   with optional RIFF LIST/INFO metadata chunk (title, artist, album, year, genre).
- * - bufferToMediaRecorderBlob: real-time capture of an AudioBuffer into a
- *   compressed container (WebM/Opus) — used as the browser-native "MP3" path,
- *   since browsers have no built-in MP3 encoder.
+ * - audioBufferToMp3: standards-valid MPEG-1 Layer III encoding via lamejs.
  * - resampleBuffer / normalizePeaks: honest signal processing before encoding.
  * - triggerDownload / formatBytes / sanitizeFileName: browser download helpers.
  *
@@ -204,13 +202,31 @@ export function normalizePeaks(buffer: AudioBuffer, targetPeak = 0.98): void {
   }
 }
 
-// ─── MediaRecorder capture (MP3-adjacent compressed export) ──
+// ─── Standards-valid MP3 encoding ─────────────────────────────
+/** Encode PCM as MPEG-1 Layer III using the browser-bundled lamejs encoder. */
+export async function audioBufferToMp3(buffer: AudioBuffer, bitrate: number): Promise<Blob> {
+  const lame = await import("lamejs");
+  const encoder = new lame.Mp3Encoder(2, buffer.sampleRate, bitrate);
+  const left = buffer.getChannelData(0);
+  const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
+  const chunks: Int8Array[] = [];
+  for (let i = 0; i < left.length; i += 1152) {
+    const n = Math.min(1152, left.length - i);
+    const l = new Int16Array(n); const r = new Int16Array(n);
+    for (let j = 0; j < n; j++) {
+      l[j] = Math.max(-32768, Math.min(32767, Math.round(left[i + j] * 32767)));
+      r[j] = Math.max(-32768, Math.min(32767, Math.round(right[i + j] * 32767)));
+    }
+    const encoded = encoder.encodeBuffer(l, r);
+    if (encoded.length) chunks.push(encoded);
+    if ((i / 1152) % 32 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  const tail = encoder.flush();
+  if (tail.length) chunks.push(tail);
+  return new Blob(chunks, { type: "audio/mpeg" });
+}
 
-/**
- * Capture an AudioBuffer into a compressed container by playing it through a
- * MediaStreamDestination and recording with MediaRecorder (WebM/Opus).
- * This is the browser-native stand-in for MP3 — no browser ships an MP3 encoder.
- */
+/** Legacy recording helper; never use it as an MP3 encoder. */
 export async function bufferToMediaRecorderBlob(buffer: AudioBuffer, mimeType: string): Promise<Blob> {
   const Ctor =
     (window as any).AudioContext || (window as any).webkitAudioContext;

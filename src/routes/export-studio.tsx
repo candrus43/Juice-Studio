@@ -16,13 +16,12 @@ import { createBeatEngine, buildArrangement } from "../audio/arranger";
 import { getContext } from "../audio/engine";
 import {
   audioBufferToWav,
-  bufferToMediaRecorderBlob,
+  audioBufferToMp3,
   resampleBuffer,
   normalizePeaks,
   triggerDownload,
   formatBytes,
   sanitizeFileName,
-  pickRecorderMime,
 } from "../audio/export";
 
 const isBrowser = typeof window !== "undefined";
@@ -32,10 +31,10 @@ export const Route = createFileRoute("/export-studio")({
 });
 
 interface ExportSettings {
-  format: "wav" | "mp3" | "flac" | "aiff";
+  format: "wav" | "mp3";
   quality: string;
   sampleRate: number;
-  exportType: "full" | "instrumental" | "stems" | "lyrics" | "backup";
+  exportType: "full" | "instrumental";
   normalize: boolean;
   targetLUFS: number;
   includeMetadata: boolean;
@@ -80,20 +79,6 @@ const formatOptions = [
     useCase: "Best for sharing, streaming previews, and quick demos",
     icon: "M12 18l-4-3.5M12 18l4-3.5M12 18V6m-6 6h.01M18 12h.01M6 6h.01M18 6h.01M6 18h.01M18 18h.01",
   },
-  {
-    id: "flac" as const,
-    label: "FLAC",
-    desc: "Lossless compression, smaller than WAV",
-    useCase: "Best for high-quality distribution with lower storage needs",
-    icon: "M4 6h16M4 10h16M4 14h16M4 18h16M9 6v12M15 6v12",
-  },
-  {
-    id: "aiff" as const,
-    label: "AIFF",
-    desc: "Uncompressed, Apple standard",
-    useCase: "Best for Apple ecosystem and Logic Pro compatibility",
-    icon: "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
-  },
 ];
 
 const qualityOptions: Record<string, { id: string; label: string }[]> = {
@@ -108,26 +93,13 @@ const qualityOptions: Record<string, { id: string; label: string }[]> = {
     { id: "256 kbps", label: "256 kbps" },
     { id: "320 kbps", label: "320 kbps" },
   ],
-  flac: [
-    { id: "Level 0", label: "Level 0 (Fastest)" },
-    { id: "Level 4", label: "Level 4 (Balanced)" },
-    { id: "Level 8", label: "Level 8 (Smallest)" },
-  ],
-  aiff: [
-    { id: "16-bit", label: "16-bit" },
-    { id: "24-bit", label: "24-bit" },
-    { id: "32-bit float", label: "32-bit float" },
-  ],
 };
 
 const sampleRates = [44100, 48000, 96000];
 
 const exportTypeOptions = [
-  { id: "full", label: "Full Song", desc: "Complete mixed and mastered track", icon: "M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" },
+  { id: "full", label: "Full Song", desc: "Complete mixed track", icon: "M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" },
   { id: "instrumental", label: "Instrumental", desc: "Beat only, no vocals", icon: "M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" },
-  { id: "stems", label: "Stems", desc: "Individual tracks as ZIP", icon: "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" },
-  { id: "lyrics", label: "Lyrics PDF", desc: "Lyrics sheet with metadata", icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" },
-  { id: "backup", label: "Complete Backup", desc: "Project file + all assets", icon: "M5 3a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V9l-5-6H5z" },
 ];
 
 const waveformLabels = [
@@ -232,7 +204,6 @@ function ExportStudio() {
       setExportProgress(15);
       const rendered = await exportMix();
 
-      for (const { track, muted } of mutes) track.muted = muted;
       setExportProgress(55);
 
       // 4. Honor the selected sample rate (exportMix renders at 44.1kHz).
@@ -270,43 +241,21 @@ function ExportStudio() {
         blob = audioBufferToWav(buffer, { bitDepth, metadata });
         ext = "wav";
         formatLabel = `WAV · ${bitDepth}-bit`;
-      } else if (settings.format === "mp3") {
-        // Browsers have no MP3 encoder — capture the real playback as WebM/Opus.
-        const mime = pickRecorderMime();
-        if (!mime) {
-          setExportStageLabel("Encoding WAV...");
-          setExportProgress(65);
-          blob = audioBufferToWav(buffer, { bitDepth: 16, metadata });
-          ext = "wav";
-          formatLabel = "WAV · 16-bit";
-          note = "MP3 requires a codec this browser doesn't provide — exported WAV instead.";
-        } else {
-          setExportStageLabel("Encoding MP3 (WebM/Opus)...");
-          setExportProgress(65);
-          blob = await bufferToMediaRecorderBlob(buffer, mime);
-          ext = "webm";
-          formatLabel = "WebM (Opus)";
-          note = "Browsers have no MP3 encoder — exported as WebM (Opus). Use WAV for distribution/mastering.";
-        }
       } else {
-        // FLAC / AIFF need native encoders; export lossless PCM WAV instead and say so.
-        setExportStageLabel("Encoding WAV...");
+        const bitrate = Number.parseInt(settings.quality, 10);
+        setExportStageLabel(`Encoding MP3 (${bitrate} kbps)...`);
         setExportProgress(65);
-        blob = audioBufferToWav(buffer, { bitDepth: 24, metadata });
-        ext = "wav";
-        formatLabel = "WAV · 24-bit";
-        note = `${settings.format.toUpperCase()} encoding requires a native codec — exported as WAV (lossless PCM).`;
+        blob = await audioBufferToMp3(buffer, bitrate);
+        ext = "mp3";
+        formatLabel = `MP3 · ${bitrate} kbps`;
+        note = "Encoded with lamejs MPEG-1 Layer III encoder.";
       }
-
       setExportProgress(90);
 
       // 7. Filename from metadata (title/artist/album).
       const typeLabel =
         settings.exportType === "instrumental" ? "Instrumental"
-        : settings.exportType === "stems" ? "Stems"
-        : settings.exportType === "lyrics" ? "Lyrics"
-        : settings.exportType === "backup" ? "Backup"
-        : "Master";
+        : "Mix";
       const fileName = `${sanitizeFileName(settings.metadata.title || projectName)}_${sanitizeFileName(
         settings.metadata.artist || "King_Juice"
       )}_${sanitizeFileName(settings.metadata.album || projectName)}_${typeLabel}.${ext}`;
@@ -324,6 +273,7 @@ function ExportStudio() {
         status: "completed",
         type: settings.exportType,
       };
+      if (downloadBlobs.current.size >= 3) downloadBlobs.current.delete(downloadBlobs.current.keys().next().value!);
       downloadBlobs.current.set(id, { blob, fileName });
       setLastExport(newExport);
       setExportNote(note);
@@ -343,6 +293,8 @@ function ExportStudio() {
       setExportProgress(0);
       setExportStageLabel("Export failed");
       setExportError(err instanceof Error ? err.message : "Export failed — please try again.");
+    } finally {
+      for (const { track, muted } of mutes) track.muted = muted;
     }
   }, [settings, project.name]);
 
